@@ -1,0 +1,193 @@
+<?php
+
+/**
+ * @file ax3.module
+ *  This module is responsible for creating user
+ *  2 upon installation.
+ */
+
+// Include api key and url for xmlrpc call.
+require_once('ax3.inc');
+
+/**
+ * Create and notify user number 2.
+ * 
+ * Note: The second user seems to get 
+ * the uid 3. It's unclear why drupal
+ * doesn't assign uid 2. But this doesn't
+ * an effect. 
+ */
+function ax3_create_user2() {
+  // Get $info from ax2 about the site being created right now.
+  $info = ax3_getinfo();
+
+  if ($info) {
+    // save user
+    $details = array(
+      'name' => $info['user']['name'],
+      'pass' => md5($info['user']['name']),
+      'mail' => $info['user']['mail'],
+      'access' => 1, 
+      'status' => 0, // start at zero, then change to trigger mail
+      'roles' => array(4 => 4), // @todo should not be hard coded
+                              // ax2 should provide a setting
+                              // for this at admin/settings/ax2.
+    );
+    $user = user_save(null, $details);
+    // Changing users status from 0 to 1 triggers a log-in email.
+    // todo there's probably a better way to do this. 
+    user_save($user, array('status' => 1));
+  }
+}
+
+/**
+ * Implementation of hook_mail_alter().
+ *
+ * hook_mail_alter(&$message)
+ * $message has the following key-value pairs:
+ * 
+ * 'id': Unique id of the mail being sent.
+ * 'to': The destination e-mail address(es)
+ * 'subject': The subject of the e-mail. This should not contain any new line characters
+ * 'body': This is an array which contains the actual message to be sent
+ * 'from': The e-mail address of the sender. This can be either a custom address or site's email address
+ * 'headers': This is an array containing e-mail's MIME type, Content-type etc.
+ * 'params': Params are the parameters which is supplied by the function which calls the drupal_mail(), which builds the message prior to hook_mail_alter is invoked.
+ * 'language': The language used to build the message prior to hook_mail_alter is invoked
+ */
+function ax3_mail_alter(&$message) {
+  // Fire when user2 gets account activation message.
+  if ($message['id'] == 'user_status_activated') {
+    // Get info about the site we're creating.
+    // todo It seems inefficient to have ax3_getinfo() do
+    //   this xmlrpc call twice (once on creating user and
+    //   again now when sending user2 email). 
+    $info = ax3_getinfo();
+ 
+    // Find out if domain is a subdomain of 
+    // the wildcard domains available through 
+    // the Aegir installation where ax1 lives.
+    //
+    // todo Add the step described above. Right now this is all hard coded below.
+   
+    // If domain is something like example.com,
+    // and not oneof.oursubdomains.com, email a link
+    // to an alias on our server. Their domain won't be ready
+    // yet.
+    //
+    // Check for starswithstripes.com or
+    // starswithstripes.net in domain.
+    $domain = $info['domain'];
+    if ( !strpos($domain, 'starswithstripes.com') &&  
+         !strpos($domain, 'starswithstripes.net')) {
+
+      // Get subdomain alias.
+      foreach($info['alias'] as $alias) {
+        if ( strpos($alias, 'starswithstripes.net') || 
+             strpos($alias, 'starswithstripes.com') ) {
+          $url = 'http://'. trim($alias);
+        }
+      }
+
+      $account = $message['params']['account'];
+      $message['body'][0] = t(
+'!username,
+
+Your account at !site has been activated.
+
+You may now log in and start building your website by clicking on this link or copying and pasting it in your browser:
+
+!login_url
+
+This is a one-time login. It can be used only once.
+
+After logging in, you will be redirected to !edit_uri to change your password.
+
+Once you have set your own password, you will be able to log in to !login_uri in the future using:
+
+username: !username
+
+As soon as !domain is properly set-up, !site will start redirecting traffic to !domain.
+
+To set up !domain for your new website, have your registrar (whoever you bought your domain from, e.g. Register.com or GoDaddy.com) set the name servers for your domain to: 
+ns1.starswithstripes.com 
+ns2.starswithstripes.com
+
+This process can take 48 hours. If it takes longer than 48 hours, please notify us at info@starswithstipes.org and we will be happy to help you resolve the issue.
+',
+        array(
+          '!username' => $account->name,
+          '!site' => $url,
+          '!login_url' => ax3_pass_reset_url($account, $url),  
+          '!login_uri' => url($url ."/user", array('absolute' => TRUE, 'external' => TRUE)),  
+          '!edit_uri' => url("$url/user/$account->uid/edit", array('absolute' => TRUE, 'external' => TRUE)),  
+          '!domain' => $domain,
+        )
+      );
+    }
+  }
+  $message['body'][0] .= t('
+PLEASE NOTE: This is a beta service. We are still constantly improving the software and support materials. Please help us improve by posting feedback, questions and comments in the support forum: www.starswithstripes.org/support. 
+');
+}     
+
+/**
+ * user_pass_reset_url reimplemented with
+ * site alias.
+ * 
+ * @param
+ *  $account, user object
+ * 
+ * @param
+ *  $url, alias
+ */
+function ax3_pass_reset_url($account, $url) {
+  $timestamp = time();
+  return url($url ."/user/reset/$account->uid/$timestamp/". user_pass_rehash($account->pass, $timestamp, $account->login), array('absolute' => TRUE, 'external' => TRUE));
+}
+
+
+/**
+ * TODO 
+ * Implementation of hook_cron()
+ *
+ * Get domain from ax2.
+ * Send xmlrpc calls to domain until ax3 responds.
+ * Then tell ax1 to turn on redirects and turn ax3 off.
+ */
+
+/**
+ * Get user info from ax2.
+ * 
+ * Note: At this stage, ax2 becomes aware that
+ * this website has been created and the 
+ * 'website created' field (field_website_created_value) 
+ * in the website node (that is, the website sign up form)
+ * is set to TRUE.
+ * 
+ * @return
+ *  $info, array
+ *  $info['user'], user array to save as a new user
+ *  $info['domain'], string, domain
+ *  $info['alias'], array of aliases
+ */
+function ax3_getinfo() {
+  $key = ax3_api_key();
+  $key = base64_encode($key); // encode key before sending over Internet
+  $url = ax3_url();
+  $url = 'http://'. $url .'/xmlrpc.php'; // todo handle https too? 
+  $method = 'ax2.getInfo';
+  global $base_url;
+  $domain = $base_url;
+  // remove 'http://' from $domain
+  if (substr($domain, 0, 7)== 'http://') {
+    $domain = substr($domain, 7); 
+  }
+  $info = xmlrpc($url, $method, $key, $domain);  
+  // Note: $info = FALSE if the site being installed wasn't created by ax2
+  // (that is, if the site is being created manually).
+
+  return $info;
+} 
+
+

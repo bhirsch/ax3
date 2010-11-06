@@ -1,0 +1,6 @@
+; $Id $
+name = "Aegier XML-RPC Sign-Up 3"
+description = "This module lives inside a Drupal installation profile created by Aegir. It is responsible for creating user 2 and notifying that person about their new website. It's only necessary if the person signing up for the website will NOT be user 1."
+core = 6.x
+version = "6.x-0.0"
+project = "Stars with Stripes"
